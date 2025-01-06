@@ -1,5 +1,7 @@
 # ========== Poker Hands ==========
 # The objective of this program is to calculate the odds of a given poker hand. We will access the device's camera, identify the cards in play and then proceed to print out the odds of winning. 
+#
+# Author: Vinoin Devpaul Vincely (2025)
 
 from collections import namedtuple
 from PIL import Image 
@@ -7,8 +9,8 @@ import random, torch
 import matplotlib.pyplot as plt 
 import re, cv2, numpy as np
 from tabulate import tabulate
-import trainNN_cardClassifier_v1 as cardNN
-from trainNN_cardClassifier_v1 import PlayingCards_Dataset, PlayingCard_Classifier, transform
+import PlayingCardClassifier as cardNN
+from PlayingCardClassifier import PlayingCards_Dataset, PlayingCard_Classifier, transform
 from scipy.signal import find_peaks
 # import VideoStream
 
@@ -155,15 +157,18 @@ class calculate_PreFlop_Odds:
 
             # Deal River + Flop
             openCards = deal_hand(simDeck1,5)
+            # print('Hero Hand:',end=''); print(hero_hand)
             
             # Evaluate Score 
+            # print('Preflop (hero hand + open cards)!')
             opp_score = []            
-            hand_score = evaluate_hand(hero_hand, openCards)
+            hand_score = evaluate_hand(hero_hand, openCards); 
             
             nOpTot = numOpp*2
 
-            for nO in range(0, nOpTot, 2):                
-                opp_score.append(evaluate_hand(oppHand_all[nO:nO+2], openCards));             
+            for nO in range(0, nOpTot, 2):  
+                # print(f'Preflop (opponent hand + open cards) #{nO}!')                
+                opp_score.append(evaluate_hand(oppHand_all[nO:nO+2], openCards));          
             
             # Determine Winners 
             allScores = [hand_score] + opp_score; maxScore = max(allScores)
@@ -284,50 +289,183 @@ def find_cards(frame, camDim):
     The objective of this class is to process the recorded frame of card classification.   '''   
 
     # Image transforms 
-    frameGray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY) # to RGB 
-    frameBlur = cv2.GaussianBlur(frameGray, (15,15), 30,30)
+    frameBlur = cv2.GaussianBlur(frame, (3,3), 5,5)         # Apply Blur 
+    frameHSV = cv2.cvtColor(frameBlur, cv2.COLOR_RGB2HSV)   # to HSV (detects whites better) 
+    frameGray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)     # to gray for classifier 
+    frameDim = frame.shape                                  # For checking card areas 
+
+    # Bounds for white detection 
+    sensitivity = 85                              # Adjust sensitivity based on current lighting
+    lower_white = np.array([0,0,255-sensitivity])
+    upper_white = np.array([255,sensitivity,255])
 
     # Find Card Contours 
-    mask = cv2.inRange(frameBlur,180,255) # get mask 
-    cnts,_ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE) # Find contours 
+    mask = cv2.inRange(frameHSV, lower_white, upper_white) # get mask 
+    cnts,_ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE) # Find contours 
     index_sort = sorted(range(len(cnts)), key=lambda i : cv2.contourArea(cnts[i]),reverse=True) # Arrange contours in descending order of area 
     
+    
     # Pick top 7
-    vertLoc = int(camDim[0]*0.8) # checking the lower 20% of the screen for hand cards 
-    cnts_sort = []; cardAreas = []; handCards_idx = []; searchCards = True
+    vertLoc = int(camDim[0]*0.5) # checking the lower 50% of the screen for hand cards 
+    cnts_sort = []; cardAreas = []; handCards_idx = []; cnts_final = []; vertF = []
+
+    if len(index_sort) >= 7: tIter = 7
+    else: tIter = len(index_sort)
     
     if not cnts: 
         print('No contours found!')
     else:
-        for idx in range(len(cnts)):                    # Loop through contours 
-            cnts_sort.append(cnts[index_sort[idx]])     # Sorted contour list 
-            x,y,h,w = cv2.boundingRect(cnts_sort[idx])  # Get verticies of contour 
-            contArea = frameGray[y:y+h, x:x+w]
-
-            hist = cv2.calcHist(contArea, [0], None, [256], [0, 256])    
-            peaks, _ = find_peaks(np.array(hist).flatten(), height=(5000,75000))
+        for idx in range(tIter): #range(len(index_sort)):                  # Loop through contours 
+            cnts_sort.append(cnts[index_sort[idx]])         # Sorted contour list 
+            verts = cv2.boundingRect(cnts_sort[idx])        # Get verticies of contour 
+            x,y,w,h = verts[0],verts[1],verts[2],verts[3]; vertF.append(verts)
+            contArea = cv2.contourArea(cnts_sort[idx])
             
-            if len(peaks[:5]) >= 2:
-                if y > vertLoc: handCards_idx.append(True)
+            if contArea/(frameDim[0]*frameDim[1]) > 0.5e-2:
+                cardAreas.append(frameGray[y:y+h, x:x+w])    # Images within final contours
+                cnts_final.append(cnts_sort[idx])           # Track final contours
+                
+                # Find the number of 
+                ct = 0; arr = range(y, y+h)
+                for val in arr:
+                    if val > vertLoc: ct += 1               # zero is upper left corner of the screen
+                if ct > len(arr)/2: handCards_idx.append(True)
                 else: handCards_idx.append(False)
-
-                cardAreas.append(contArea) # Card areas                    
+                # if max(set(checkArr), key=checkArr.count):
+            # if len(cardAreas) == 7:
+            #     break
 
     # Draw Contours  
-    frame_wConts = cv2.drawContours(frame, cnts_sort, -1, (255,0,0), 5)
-    frame_wConts = cv2.line(frame_wConts, (0,vertLoc), (camDim[1],vertLoc), color=(255,0,0), thickness=2)   
+    frame_wConts = cv2.drawContours(frame, cnts_final, -1, (255,0,0), 2)
+    frame_wConts = cv2.line(frame_wConts, (0,vertLoc), (camDim[1],vertLoc), color=(0,0,0), thickness=2)   
 
     # return a frame that can be concatinated to the original frame that is being plotted to the figure. 
 
-    return frame_wConts, cardAreas, handCards_idx        
+    return frame_wConts, cardAreas, handCards_idx, vertF        
 
+# Function for on camera buttons
 
+def button_callback(event, x, y, flags, param):
+    global computeButton, resetSim, isDisplayed, findCard
+    if event == cv2.EVENT_LBUTTONDOWN:
+        # Check if click is within button boundaries        
+        if buttonPos[0] <= x <= buttonPos[2] and buttonPos[1] <= y <= buttonPos[3]:        
+            if not isDisplayed:
+                computeButton = True; findCard = False
+            else: 
+                computeButton = False; resetSim = True 
+
+def button_action(frame, bn):
+    ''' Displays the button and associated changes '''
+    global resetSim
+    # Draw button (rectangle)
+    xTemp = []
+    if bn == 0:
+        xTemp = 0
+        if computeButton:
+            button_color = (169, 169, 169) 
+            buttonText = 'Computing...'; xTex = buttonPos[3]+20
+        else:
+            button_color = (0, 0, 0)
+            buttonText = 'Compute Odds?'; xTex = buttonPos[3]+10           
+
+    elif bn == 1:
+        xTemp = 30
+        button_color = (0, 0, 0) 
+        buttonText = 'Compute New Odds?'; xTex = buttonPos[3]-22
+        if computeButton:
+            resetSim = True
+
+    edgeThick = 2
+    cv2.rectangle(frame, (buttonPos[0]-edgeThick-xTemp, buttonPos[1]-edgeThick), (buttonPos[2]+edgeThick, buttonPos[3]+edgeThick), (255,255,255), -1)    
+    cv2.rectangle(frame, (buttonPos[0]-xTemp, buttonPos[1]), (buttonPos[2], buttonPos[3]), button_color, -1)
+    
+    # Add text to button
+    cv2.putText(frame, buttonText, (xTex, buttonPos[1]+30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+    return frame
+
+def displayTable(frame):
+    ''' Print the table to display resutls
+    
+     Arguments:
+        frame    - current frame to place the table on        
+    '''
+    # Printing table
+    tabelPos = [50, 100, 600, 380]
+    
+    tableFrame = frame.copy()
+    cv2.rectangle(tableFrame, (tabelPos[0], tabelPos[1]), (tabelPos[2], tabelPos[3]), (0,0,0), -1)   
+    alpha = 0.5; frame = cv2.addWeighted(tableFrame, alpha, frame, 1 - alpha, 0); 
+    cv2.rectangle(frame, (tabelPos[0], tabelPos[1]), (tabelPos[2], tabelPos[3]), (255,255,255), 2)  
+    xLine = 160 + tabelPos[0]; cv2.line(frame, (xLine,tabelPos[1]), (xLine,tabelPos[3]), (255,255,255), 2)
+    yLine = 65 + tabelPos[1]; cv2.line(frame, (tabelPos[0],yLine), (tabelPos[2],yLine), (255,255,255), 2)
+
+    # First Block 
+    txtArray = ['Number', 'of Players', 'Win', 'Rate (%)', 'Split', 'Rate (%)', 'Total', 'Equity (%)']
+    spc = [20, 45, 20, 45, 20, 45, 20, 45]; xs = 0; yTex, xTex = tabelPos[1] + 30, tabelPos[0] + 10
+
+    for txt in txtArray: 
+        cv2.putText(frame, txt, (xTex, yTex), cv2.FONT_HERSHEY_PLAIN, 1.1, (255, 255, 255), 2); 
+        if xs >= 2:
+            if xs % 2: cv2.putText(frame, 'Post', (xTex+105, yTex), cv2.FONT_HERSHEY_PLAIN, 1, (118, 244, 249), 2); 
+            else: cv2.putText(frame, 'Pre', (xTex+105, yTex), cv2.FONT_HERSHEY_PLAIN, 1, (118, 244, 249), 2); 
+        yTex += spc[xs]; xs += 1
+
+    return frame, tabelPos
+
+def displayResults(frame, preFlop, postFlop, maxPlyrs, tablePos):
+    ''' Prints the table with results. 
+    Asumes that a table has been displayed (with display Table)
+    
+    Arguments:
+        frame    - current frame to place the table on 
+        preFlop  - array of Preflop win and split rate 
+        postFlop - array of Postflop win and split rate 
+        maxPlyrs - maximum number of players to be displayed
+    '''    
+    if len(preFlop) != len(postFlop):
+        print('Number of PreFlop and PostFlop data must match the number of values in nPlyrs!'); exit()
+
+    nPlyrs = range(3,maxPlyrs+1) # This function is optimized for printing 
+
+    # Other Blks
+    blk0 = 180; blkSize = int((tablePos[2]-tablePos[0]-blk0)/len(nPlyrs)); lineSpace = 65
+
+    for blk in range(len(nPlyrs)):        
+        xTex, yTex = tablePos[0] + blk0 + blkSize*(blk), tablePos[1] + 40
+        
+        spc = 12
+        cv2.putText(frame, f" {nPlyrs[blk]}", (xTex, yTex), cv2.FONT_HERSHEY_PLAIN, 1.1, (255, 255, 255), 2); yTex += lineSpace;         
+                
+        if blk < len(preFlop):
+
+            cv2.putText(frame, f"{preFlop[blk][0]*100:.1f}", (xTex, yTex-spc), cv2.FONT_HERSHEY_PLAIN, 1.1, (255, 255, 255), 2); 
+            cv2.putText(frame, f"{postFlop[blk][0]*100:.1f}", (xTex, yTex+spc), cv2.FONT_HERSHEY_PLAIN, 1.1, (255, 255, 255), 2); yTex += lineSpace
+
+            cv2.putText(frame, f"{preFlop[blk][1]*100:.1f}", (xTex, yTex-spc), cv2.FONT_HERSHEY_PLAIN, 1.1, (255, 255, 255), 2); 
+            cv2.putText(frame, f"{postFlop[blk][1]*100:.1f}", (xTex, yTex+spc), cv2.FONT_HERSHEY_PLAIN, 1.1, (255, 255, 255), 2); yTex += lineSpace
+
+            cv2.putText(frame, f"{(preFlop[blk][0]+preFlop[blk][1])*100:.1f}", (xTex, yTex-spc), cv2.FONT_HERSHEY_PLAIN, 1.1, (255, 255, 255), 2); 
+            cv2.putText(frame, f"{(postFlop[blk][0]+postFlop[blk][1])*100:.1f}", (xTex, yTex+spc), cv2.FONT_HERSHEY_PLAIN, 1.1, (255, 255, 255), 2); yTex += lineSpace
+
+        # elif nPlyrs[blk] < cPlyr: continue
+        # else:
+        #     cv2.putText(frame, f"???", (xTex, yTex), cv2.FONT_HERSHEY_PLAIN, 1.1, (255, 255, 255), 2); 
+    
+        # NOTE: Iteration through the loops is incorrect! Start debugging with this!            
+
+    
+    return frame
 
 # input my cards
 # Use of manual input of cards only         
 def cardID_to_ClassText(text):
     ''' Translated Card ID to Text and Rank'''
-    rank, suit = text[0],text[1]
+    
+    if len(text) == 3: rank, suit = text[0],text[2]
+    else: rank, suit = text[0],text[1]
+    
     if suit.casefold() == 'h':
         suit = 'Hearts'
     elif suit.casefold() == 's':
@@ -343,22 +481,14 @@ def cardID_to_ClassText(text):
         rank = 'Queen'
     elif rank.casefold() == 'j':
         rank = 'Jack'
-    elif rank.casefold() == 'a' or rank == '1':
+    elif rank.casefold() == 'a':
         rank = 'Ace' 
-    elif rank.casefold() == 't':
+    elif rank.casefold() == '1':
         rank = '10'
     else:
         rank
     return rank, suit
 
-
-# # Define transforms
-# transform = transforms.Compose([
-#     transforms.Resize((128, 128)),  # Resize to standard size
-#     transforms.ToTensor(),
-#     # transforms.Normalize(mean=[0.485, 0.456, 0.406],
-#     #                     std=[0.229, 0.224, 0.225])  # ImageNet normalization
-# ])
 
     
 # =================== Main Function =====================
@@ -366,15 +496,14 @@ def main():
     preFlop = calculate_PreFlop_Odds()
     postFlop = calculate_PostFlop_Odds()
     
-    model = torch.load('Cards_Dataset/CardClassifier.pth')
-    classLabels = cardNN.get_classLabels('Cards_Dataset/')
+    model = PlayingCard_Classifier()
+    model.load_state_dict(torch.load('Cards_Dataset2/CardClassifier.pth'))
+    model.eval()
+    classLabels = cardNN.get_classLabels('Cards_Dataset2/')
     
-    # Card initialization 
-    handCard = []
-    riverCard = []
 
     # Initialize Camera 
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(1) # using an external camera
     if not cap.isOpened():
         print("Error: Could not open Camera.")
         return            
@@ -386,51 +515,121 @@ def main():
     print(f'Frame rate of accessed camera = {fps}')
     if fps == 0:
         fps = 30  # fallback to 30 fps if camera doesn't report fps
+    
+    # Button info 
+    cv2.namedWindow('Looking for cards...')
+    cv2.setMouseCallback('Looking for cards...', button_callback)
+    global buttonPos, computeButton, resetSim, findCard, isDisplayed
+    buttonPos = [frame_width-190, frame_height-80, frame_width-40, frame_height-30]
 
     # Open Camera 
-    runCam = True; 
+    runCam = True; isDisplayed = False; findCard = True
+    computeButton = False; resetSim = False; bn = 0
+    handCard = []; riverCard = []; nPl = 0; frameLst = []
+    preFlopFinal = []; postFlopFinal = []; 
     try:
         while runCam:
             
             # Read Camera data 
             ret, frame = cap.read()
             if not ret:
-                print("Error: Could not read frame from camera!"); break
+                print("Error: Could not read frame from camera!"); break        
+
+            # Temporary containers that hold cards 
+            handCardTemp = []
+            riverCardTemp = []               
             
-            # ================ Idenifying cards ======================
-            frame, cardAreas, handCard_idx = find_cards(frame, (frame_height, frame_width))        
+            if findCard:
+                # ================ Idenifying cards ======================
+                frame, cardAreas, handCard_idx, verts = find_cards(frame, (frame_height, frame_width))  
+                # print(f'Total Cards detected: {len(cardAreas)}')      
 
-            if any(cardAreas):
-                # Transform cards for model
-                data = torch.zeros((32,1,128,128))
-                for idx in range(len(cardAreas)):
-                                
-                    frameTensor = Image.fromarray(cardAreas[idx]) # Numpy to PIL Image
-                    data[idx,0,:,:] = transform(frameTensor)
+                if len(cardAreas) > 0:
+                    # Transform cards for model
+                    data = torch.zeros((32,1,128,128))
+                    for idx in range(len(cardAreas)):                        
 
-                score = model(data)             # Model predicition 
-                _, prediction = score.max(1)
-                
-                for idx in range(len(handCard_idx)): 
-                    classLabel = str(classLabels[prediction[idx].item()]); 
-                    rank, suit = cardID_to_ClassText(classLabel)
-                    if handCard_idx[idx]:                    
-                        handCard.append(Card(rank,suit))
-                    else: 
-                        riverCard.append(Card(rank,suit)) 
-            else:                           
-                classLabel = 'No Card Found!'                
-
-            frame = cv2.putText(frame, str(classLabel), (50,50), cv2.FONT_HERSHEY_SIMPLEX, 2, (255,0,0), 2, cv2.LINE_AA)
-            cv2.imshow('Looking for cards...', frame)
+                        frameTensor = Image.fromarray(cardAreas[idx]) # Numpy to PIL Image
+                        data[idx,0,:,:] = transform(frameTensor)
 
 
-            x = 0
-            # for card_idx in handCard_idx:
-            #     card = cardAreas[x]; x += 1
-            #     if card_idx:
+                    score = model(data)             # Model predicition 
+                    _, prediction = score.max(1)                
                     
-            # ========================================================        
+                    for idx in range(len(handCard_idx)): 
+                        classLabel = str(classLabels[prediction[idx].item()])                    
+                        # print(f'Card #{idx}: {classLabel}') 
+
+                        rank, suit = cardID_to_ClassText(classLabel)
+
+                        # Place text identifying card on the card area
+                        card_info = rank + ' ' + suit
+                        frame = cv2.putText(frame, card_info, (verts[idx][0],verts[idx][1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (238,238,155), 2, cv2.LINE_AA)
+
+                        if handCard_idx[idx]:                    
+                            handCardTemp.append(Card(rank,suit))
+                            
+                        else: 
+                            riverCardTemp.append(Card(rank,suit)) 
+                    
+                    handCard = handCardTemp; riverCard = riverCardTemp
+                        
+            else: 
+
+                if not handCard or not riverCard:
+                    print('Hand Cards: ', end=''); print(handCard)
+                    print('River Cards: ', end=''); print(riverCard)
+                    frame = cv2.putText(frame, 'NO CARDS FOUND!', (verts[idx][0],verts[idx][1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (37,150,190), 2, cv2.LINE_AA)
+                    print('No cards found! Returning to camera feed...')
+                    findCard = True
+
+                else:                     
+                    # ============= Computing probabilities ============================                    
+                    if computeButton:
+                                                
+                        nPlyrs = range(3,8)
+
+                        print(f'\nComputing porbabilities for {nPlyrs[nPl]} opponents...\nHand Cards: {handCard[0].rank} of {handCard[0].suit}, {handCard[1].rank} of {handCard[1].suit}')
+                        print(f'River Cards: {riverCard[0].rank} of {riverCard[0].suit}, {riverCard[1].rank} of {riverCard[1].suit}, {riverCard[2].rank} of {riverCard[2].suit}')
+
+                        # Drawing Table to display results 
+                        frame, tablePos = displayTable(frame);                         
+
+                        preFlopRes = preFlop.simulate_MC_for_odds(handCard, numOpp=nPlyrs[nPl], num_sims=1e4)                                 # [Win Rate, Split Rate]
+                        pstFlopRes = postFlop.simulate_MC_for_odds(handCard, riverCard, numOpp=nPlyrs[nPl], num_sims=1e4)      # number of sims - 1e4 
+
+                        preFlopFinal.append([preFlopRes[0], preFlopRes[1]]); 
+                        postFlopFinal.append([pstFlopRes[0], pstFlopRes[1]])
+
+                        frame = displayResults(frame, preFlopFinal, postFlopFinal, 7, tablePos)
+                        
+                        output = [['Win Rate', preFlopRes[0]*100, pstFlopRes[0]*100], ['Split Rate', preFlopRes[1]*100, pstFlopRes[1]*100], ['Total Equity', (preFlopRes[0]+preFlopRes[1])*100, (pstFlopRes[0]+pstFlopRes[1])*100]]
+                        print(tabulate(output, headers=('','Pre-Flop','Post-Flop'), floatfmt=".1f"))                                              
+                        
+                        nPl += 1
+                        if nPl == len(nPlyrs):
+                            frameLst = frame
+                            print('\n***** Completed all runs!'); isDisplayed = True;  computeButton = False
+                            
+                    else:
+                        frame = frameLst; bn = 1
+                        cv2.putText(frame, 'Press "q" to quit!"', (15, frame_height-15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+                        if resetSim:
+                                print('**** Simulation has been reset! ****')
+                                isDisplayed = False; computeButton = False; bn = 0
+                                resetSim = False; findCard = True; 
+                                handCard = []; riverCard = []; nPl = 0; frameLst = []
+                                preFlopFinal = []; postFlopFinal = []; 
+
+            # Display button 
+            frame = button_action(frame, bn)
+
+            # frame = cv2.resize(frame, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+
+
+            cv2.imshow('Looking for cards...', frame)
+    
 
             # break if 'q' is pressed 
             if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -439,64 +638,6 @@ def main():
     finally:
         cap.release()
         cv2.destroyAllWindows()
-
-    
-
-
-
-
-
-
-    # while run:
-        
-    #     # # my hand     
-    #     # print('Enter Hand Cards:')
-    #     # rank1, suit1 = input_myCards(1)
-    #     # rank2, suit2 = input_myCards(2)
-    #     # hand = [Card(rank1,suit1), Card(rank2,suit2)]; 
-
-    #     # print('Enter River?', end=' '); text = input()
-    #     # if text == 'y':
-    #     #     # # River Cards         
-    #     #     print('Enter River Cards:')
-    #     #     rank1, suit1 = input_myCards(1)
-    #     #     rank2, suit2 = input_myCards(2)
-    #     #     rank3, suit3 = input_myCards(3)
-    #     #     river = [Card(rank1,suit1), Card(rank2,suit2), Card(rank3,suit3)]; 
-        
-    #     # hand = [Card('6','Spades'), Card('2','Diamonds')]
-    #     # river = [Card('3','Hearts'), Card('4','Clubs'), Card('5','Clubs')]
-
-    #     hand = [Card('2','Spades'), Card('5','Spades')]
-    #     river = [Card('Ace','Hearts'), Card('10','Spades'), Card('Jack','Spades')]
-
-        
-    #     # score = evaluate_hand(hand, river+[Card('9','Hearts'), Card('4','Spades')])
-    #     # print(score)
-    #     # run = False 
-        
-
-    #     # print(hand)
-    #     # Win probability
-        
-    #     print(f'\nComputing porbabilities...\nHand Cards: {hand[0].rank} of {hand[0].suit}, {hand[1].rank} of {hand[1].suit}')
-    #     print(f'River Cards: {river[0].rank} of {river[0].suit}, {river[1].rank} of {river[1].suit}, {river[2].rank} of {river[2].suit}')
-    #     for nOps in [6]:#range(1,2):
-    #         wR_preFlop, sR_preFlop = preFlop.simulate_MC_for_odds(hand, numOpp=nOps, num_sims=1e4)
-    #         wR_pstFlop, sR_pstFlop = postFlop.simulate_MC_for_odds(hand, river, numOpp=nOps, num_sims=1e4) #1e4
-
-            
-    #         print(f"\nNumber of opponents: {nOps}\n")
-    #         # print(f"Win Rate: {wR_preFlop:.1%}")
-    #         # print(f"Split Rate: {sR_preFlop:.1%}")
-    #         # print(f"Total equity: {(wR_preFlop + sR_preFlop):.1%}")
-    #         output = [['Win Rate', wR_preFlop*100, wR_pstFlop*100], ['Split Rate', sR_preFlop*100, sR_pstFlop*100], ['Total Equity', (wR_preFlop+sR_preFlop)*100, (wR_pstFlop+sR_pstFlop)*100]]
-    #         print(tabulate(output, headers=('','Pre-Flop','Post-Flop'), floatfmt=".1f"))
-    
-    #     print('Continue Calculating? (y/n): ', end=''); text = input()
-    #     if text == 'n':
-    #         run = False            
-
 
 
 
