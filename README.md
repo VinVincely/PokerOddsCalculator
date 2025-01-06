@@ -1,7 +1,7 @@
 # The Ultimate Poker Odd Calculator 
 A sophisticated poker odds calculator that uses computer vision and machine learning to detect cards and calculate winning probabilities through Monte Carlo simulation.
 
-![Example](Images/sample.jpg)
+![Example](Images/coverImage.jpg)
 
 ## Features
 
